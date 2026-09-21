@@ -1,49 +1,76 @@
 # CapOne Tagger
 
-CapOne Tagger is a personal Firefox extension for assigning tags to Capital One credit-card transactions. The extension stores tags in Firefox Sync; it has no server, database, token, port, or scheduled task.
+A Firefox extension that adds user-defined tags to transactions on the Capital One website. Tags are stored in `browser.storage.sync` and replicate across machines signed into the same Firefox Account.
+
+Requires Firefox 140 or later.
 
 ## Install
 
-1. In Firefox, open `about:debugging#/runtime/this-firefox`.
-2. Choose **Load Temporary Add-on** and select the `extension\manifest.json` file in your clone of this repo.
-3. Visit the Capital One transactions page and use a transaction badge to create or select tags. Hover or focus a badge to view its matched transaction metadata.
+Open the signed `.xpi` in Firefox: drag it into a window, or **Add-ons Manager → gear icon → Install Add-on From File**.
 
-Temporary add-ons disappear when Firefox restarts. For a permanent personal installation, run `web-ext sign --channel=unlisted` with AMO API credentials, then install the signed `.xpi`. Release Firefox requires signed extensions.
+For development, load `extension/manifest.json` via **Load Temporary Add-on** at `about:debugging#/runtime/this-firefox`. Temporary add-ons are removed when Firefox restarts.
 
-## Sync and retention
+## How it works
 
-Firefox replicates tags across machines signed into the same Firefox Account when Sync is enabled. Tags are kept in `browser.storage.sync`, sharded by transaction month. The stable key for each assignment is Capital One's `transactionLifecycleId`; the larger `transactionReferenceId` remains visible in the tooltip but is not used for storage.
+`page-hook.js` runs in the page's own JavaScript context and patches `fetch` and `XMLHttpRequest` to read the response of Capital One's `/transactions` API call. It posts the parsed payload to `content.js`, which runs in the extension's isolated context.
 
-The extension options page sets **Retention days** (150 by default). Older monthly shards are removed after the first successful injection on a page. The same page provides **Export tags**, which downloads all tag names and assignments as JSON, and **Clear all tags**, which removes every tag and assignment from Sync.
+### Matching rows to transactions
 
-## Distributing to other machines
+Transaction rows in the DOM carry no identifier, so `content.js` matches each rendered row to an API entry by content. Rows are read from `c1-ease-cell.cdk-column-amount`, in document order.
 
-This is for self-distribution only — the extension is never published or listed on AMO, only signed via the unlisted channel so release Firefox will install it.
+Candidates are grouped by absolute amount in cents, then narrowed in order:
 
-1. **Install tooling** (once): `bun install`
+1. **Direction** — a negative rendered amount prefers entries where `transactionDebitCredit` is `Credit`.
+2. **Date** — scored by proximity: exact day, then ±1 day, then anything else. Pending rows match entries whose `transactionState` is `PENDING`. Dates are compared in local time, since the payload is UTC and the page renders local.
+3. **Card last four**, read from the row's card cell.
+4. **Description**, normalized. Skipped for credits, whose rendered text (`Payment from <bank>`) does not resemble `transactionDescription` (`CAPITAL ONE ONLINE PYMT`).
+5. **API array order**, for anything still tied.
 
-2. **Get AMO API credentials** (once, or whenever the secret is lost):
-   - Sign in at [addons.mozilla.org](https://addons.mozilla.org).
-   - Go to **Tools → Developer Hub → Manage API Keys** (`https://addons.mozilla.org/developers/addon/api/key/`).
-   - Generate a new API key. This produces a JWT issuer and a JWT secret. 2FA is typically required before AMO issues keys, and the secret is shown only once — save it somewhere safe immediately.
+Each narrowing step is skipped if it would eliminate every candidate, so a weak signal can improve a choice but never drops a row to zero matches. Claimed entries are removed from the pool, so two rows cannot resolve to the same transaction. A row that matches nothing gets no badge.
 
-3. **Set the credentials as environment variables** for the current PowerShell session:
+### Transaction keys
 
-   ```powershell
-   $env:WEB_EXT_API_KEY = "your-jwt-issuer"
-   $env:WEB_EXT_API_SECRET = "your-jwt-secret"
-   ```
+`store.transactionKey(entry)` returns the key a tag is stored under:
 
-   Do not commit these values or paste them into any file in the repo.
+- `transactionLifecycleId` when present.
+- Otherwise `f_<YYYY-MM-DD>_<absolute cents>_<hash of normalized description>`. Capital One's own ledger entries — payments, the annual fee — have no lifecycle id. The hash is FNV-1a in base36, and the `f_` prefix cannot collide with a lifecycle id, which is always digits.
+- `null` when neither a lifecycle id nor a usable date and amount exist. Those rows render a disabled badge.
 
-4. **Sign the extension**: `bun run sign`
+Two ledger entries with the same date, amount and description resolve to the same key.
 
-   The signed `.xpi` is written to `web-ext-artifacts/`.
+## Storage
 
-5. **Every signed upload needs a unique version.** Bump `version` in `extension/manifest.json` before each re-sign — AMO rejects a re-upload of a version it has already seen. Keep `package.json`'s `version` in step with it.
+| Key | Contents |
+|---|---|
+| `v` | Schema version |
+| `tagNames` | Array of tag names. A tag's id is its index; deleting a tag sets its slot to `null` so other indices stay valid. |
+| `a_YYYY-MM` | One shard per calendar month, mapping transaction key to an array of tag indices. |
+| `retentionDays` | Integer, default 150. |
 
-6. **Install on another machine**: open the signed `.xpi` in Firefox — drag it into a Firefox window, or go to **Add-ons Manager → gear icon → Install Add-on From File**. Because it's signed, release Firefox installs it permanently, unlike a temporary `about:debugging` load, which disappears on restart.
+`browser.storage.sync` allows roughly 100KB total and 8KB per item, which is why shards are per month. Pruning deletes whole shards older than the retention window, and runs once per page load after the first injection.
 
-Auto-updates for self-distributed add-ons are possible via an `update_url` in `browser_specific_settings.gecko` pointing at a hosted update manifest, but that isn't set up here — re-installing the new `.xpi` after each sign is the intended update flow.
+## Options
 
-Syncing tags across machines (see above) requires each machine's Firefox profile to be signed into the same Firefox Account with Sync enabled — the shared storage namespace comes from the fixed extension id `capone-tagger@tyler.local` in the manifest, so it stays the same across every signed build.
+Reachable from the Add-ons Manager. Sets retention days, shows bytes used against the quota, exports all tags and assignments as JSON, and clears all stored tags.
+
+## Development
+
+```
+bun install
+bun test test/
+bun run lint
+bun run build
+```
+
+`matchRows` and its helpers exist twice: in `extension/content.js`, which ships, and in `test/match-rows.test.ts`. The extension is unbundled, so the shipped copy cannot be imported by a test.
+
+`test/matcher-drift.test.ts` reads `extension/content.js` from disk, slices the block between the `pure-matching:start` and `pure-matching:end` markers, and runs it against the shared cases in `test/matching-cases.ts`. `test/match-rows.test.ts` runs its own copy against the same cases. Both copies are therefore held to the same behaviour. Changing the matcher in one place and not the other fails the suite.
+
+## Releasing
+
+1. Bump `version` in `extension/manifest.json` and `package.json`. AMO rejects a version it has already accepted.
+2. `bun run build` writes a zip to `web-ext-artifacts/`.
+3. Sign it on AMO's unlisted channel, either by uploading the zip or with `bun run sign`, which reads `WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET` from the environment.
+4. Install the signed `.xpi` on each machine.
+
+The extension id `capone-tagger@tyler.local` is fixed in the manifest, so every build shares one storage namespace. There is no `update_url`, so installing a new version means opening the new `.xpi`.
