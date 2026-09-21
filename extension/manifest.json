@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "CapOne Tagger",
+  "version": "0.1.0",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "capone-tagger@tyler.local",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://myaccounts.capitalone.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://myaccounts.capitalone.com/*"
+      ],
+      "js": [
+        "page-hook.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://myaccounts.capitalone.com/*"
+      ],
+      "js": [
+        "store.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}

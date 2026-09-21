@@ -1,0 +1,14 @@
+{
+  "name": "capone-tagger",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "bun test test/",
+    "lint": "web-ext lint --source-dir=extension",
+    "build": "web-ext build --source-dir=extension --overwrite-dest",
+    "sign": "web-ext sign --source-dir=extension --channel=unlisted"
+  },
+  "devDependencies": {
+    "web-ext": "^10.6.0"
+  }
+}
