@@ -8,6 +8,7 @@
   const tagCache = new Map();
   const tagSetQueues = new Map(), tagSetVersions = new Map();
   let allTags = [];
+  // --- pure-matching:start --- (mirrored in test/match-rows.test.ts; guarded by test/matcher-drift.test.ts)
   const normalizeDescription = value => String(value || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").replace(/\s+/g, " ").trim();
   function parseAmountCents(value) {
     const text = String(value || "").trim(), negative = /^\(.*\)$/.test(text);
@@ -84,6 +85,7 @@
     }
     return matches;
   }
+  // --- pure-matching:end ---
   function normalizeEntries(payload) {
     const numericObject = value => { if (!value || Array.isArray(value) || typeof value !== "object") return null; const keys = Object.keys(value); return keys.length && keys.every(key => /^\d+$/.test(key)) ? keys.sort((a, b) => Number(a) - Number(b)).map(key => value[key]) : null; };
     const candidate = value => Array.isArray(value) ? value : numericObject(value);
