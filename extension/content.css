@@ -31,3 +31,11 @@ c1-ease-cell.cdk-column-amount .cpt-badge:focus-visible { outline: 3px solid #12
 .cpt-bulk-tag:hover { background: #155bb3; }
 .cpt-bulk-bar button:focus-visible { outline: 2px solid #126cbd; outline-offset: 2px; }
 .cpt-bulk-icon { width: 17px; height: 17px; flex: 0 0 auto; }
+.cpt-bulk-total { padding: 0 6px; color: #1e313d; font: 700 13px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cpt-bulk-copy { background: #eef2f5; color: #34495a; }
+.cpt-bulk-copy:hover { background: #dde5eb; }
+.cpt-picker-drift { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 7px; padding: 6px 7px; border-radius: 5px; background: #fff6d6; color: #4a3800; font-size: 12px; }
+.cpt-picker-drift span { flex: 1 1 150px; }
+.cpt-drift-review { margin-left: auto; padding: 3px 8px; border: 1px solid #b08900; border-radius: 4px; background: #fff; color: #4a3800; font: 600 12px/1.2 system-ui, sans-serif; cursor: pointer; }
+.cpt-drift-review:hover { background: #fdecb0; }
+.cpt-picker-drift[hidden] { display: none; }

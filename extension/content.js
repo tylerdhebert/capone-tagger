@@ -5,12 +5,14 @@
     return;
   }
   let latestEntries = [], scheduled, warnedLookupFailure = false, prunedThisPage = false, activeTooltip, activeTooltipButton, activePicker, lastWarnedUnmatched = null, lastWarnedNoKey = null;
+  // amountCache: transaction key -> { amountCents, reviewedCents } as stored (see store.js readRecord).
   const tagCache = new Map(), amountCache = new Map();
   const tagSetVersions = new Map();
   let writeQueue = Promise.resolve();
   let allTags = [];
   // Multi-select: selected maps transaction key -> transaction. Rows carry data-cpt-key while matched.
   const selected = new Map(), transactionsByKey = new Map();
+  const displayNames = new Map();
   let lastHoveredRow = null, bulkBar = null, suppressRowClick = false;
   // --- pure-matching:start --- (mirrored in test/match-rows.test.ts; guarded by test/matcher-drift.test.ts)
   const normalizeDescription = value => String(value || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").replace(/\s+/g, " ").trim();
@@ -100,16 +102,21 @@
   }
   const formatDate = value => { try { return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); } catch { return value || ""; } };
   const formatMoney = value => new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(value || 0);
-  const taggedAmount = transaction => { const key = store.transactionKey(transaction); return key ? amountCache.get(key) ?? null : null; };
-  // Posted, tagged transactions whose amount changed since a tag was last added (e.g. a tip was added).
+  const noAmounts = { amountCents: null, reviewedCents: null };
+  const amountsOf = key => amountCache.get(key) || noAmounts;
+  const taggedAmount = transaction => { const key = store.transactionKey(transaction); return key ? amountsOf(key).amountCents : null; };
+  // Signed for display: debits positive, credits negative, whatever sign the API used.
+  const displayCents = transaction => { const cents = store.amountCents(transaction); return cents === null ? null : (transaction.transactionDebitCredit === "Credit" ? -Math.abs(cents) : Math.abs(cents)); };
+  // Posted, tagged transactions whose amount changed since a tag was last added (e.g. a tip was added),
+  // unless the user already marked the current amount as reviewed.
   function amountDrift(transaction, tags) {
     if (!tags.length || !transaction || transaction.transactionState === "PENDING") return null;
-    const tagged = taggedAmount(transaction), current = store.amountCents(transaction);
-    return tagged === null || current === null || tagged === current ? null : { tagged, current };
+    const { amountCents: tagged, reviewedCents } = amountsOf(store.transactionKey(transaction)), current = store.amountCents(transaction);
+    return tagged === null || current === null || tagged === current || reviewedCents === current ? null : { tagged, current };
   }
-  function tooltipText(t) { const address = t.transactionMerchant?.address || {}, tagged = taggedAmount(t), current = store.amountCents(t); return [
+  function tooltipText(t) { const address = t.transactionMerchant?.address || {}, tagged = taggedAmount(t), current = store.amountCents(t), reviewed = amountsOf(store.transactionKey(t)).reviewedCents === current; return [
     `date: ${formatDate(t.transactionDisplayDate)}`, `amount: ${formatMoney(t.transactionAmount)}`,
-    ...(tagged === null ? [] : [`amount when tagged: ${formatMoney(tagged / 100)}${current !== null && current !== tagged ? ` (${current > tagged ? "+" : "−"}${formatMoney(Math.abs(current - tagged) / 100)} since)` : ""}`]),
+    ...(tagged === null ? [] : [`amount when tagged: ${formatMoney(tagged / 100)}${current !== null && current !== tagged ? ` (${current > tagged ? "+" : "−"}${formatMoney(Math.abs(current - tagged) / 100)} since${reviewed ? ", reviewed" : ""})` : ""}`]),
     `description: ${t.transactionDescription || ""}`,
     `merchant: ${t.transactionMerchant?.name || ""}${address.city ? ` — ${address.city}, ${address.stateCode || ""}` : ""}`,
     `card: ${t.transactingCardLastFour || ""}`, `state: ${t.transactionState || ""}`, `category: ${t.displayCategory || ""}`,
@@ -132,6 +139,8 @@
   ]);
   const strokeIcon = { fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" };
   const resetIcon = () => svgIcon("cpt-bulk-icon", "0 0 24 24", [["path", { d: "M4 12a8 8 0 1 0 2.35-5.65" }], ["path", { d: "M6.35 2.2v4.15h4.15" }]], strokeIcon);
+  const copyIcon = () => svgIcon("cpt-bulk-icon", "0 0 24 24", [["rect", { x: "8.5", y: "8.5", width: "12", height: "12", rx: "2" }], ["path", { d: "M15.5 8.5V5.5a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3" }]], strokeIcon);
+  const checkIcon = () => svgIcon("cpt-bulk-icon", "0 0 24 24", [["path", { d: "M4.5 12.5l5 5 10-11" }]], strokeIcon);
   const tagIcon = () => svgIcon("cpt-bulk-icon", "0 0 24 24", [["path", { d: "M3 4.5v6.2a1.5 1.5 0 0 0 .44 1.06l8.8 8.8a1.5 1.5 0 0 0 2.12 0l6.2-6.2a1.5 1.5 0 0 0 0-2.12l-8.8-8.8A1.5 1.5 0 0 0 10.7 3H4.5A1.5 1.5 0 0 0 3 4.5z" }], ["circle", { cx: "7.5", cy: "7.5", r: "1.5" }]], strokeIcon);
   function paint(button, tags) {
     const visible = tags.slice(0, 3), drift = amountDrift(button._cptTransaction, tags);
@@ -160,32 +169,42 @@
     picker.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - picker.offsetWidth - 8))}px`;
     picker.style.top = `${above ? Math.max(8, rect.top - height - 8) : rect.bottom + 8}px`;
   }
-  // changes: [{ transaction, ids: Set of tag ids }]. Updates the caches optimistically, then writes every
-  // change in one storage call. All writes share one queue because changes to different transactions
-  // in the same month rewrite the same shard.
-  function applyTagChanges(changes) {
-    const pending = changes.map(({ transaction, ids }) => {
-      const key = store.transactionKey(transaction), version = (tagSetVersions.get(key) || 0) + 1;
-      const previousTags = cachedTags(key), previousAmount = amountCache.get(key) ?? null;
-      const next = allTags.filter(tag => ids.has(tag.id));
-      tagSetVersions.set(key, version); tagCache.set(key, next);
-      if (!next.length) amountCache.set(key, null);
-      else if (next.some(tag => !previousTags.some(previous => previous.id === tag.id))) amountCache.set(key, store.amountCents(transaction));
-      return { key, version, transaction, tagIndices: [...ids], previousTags, previousAmount };
+  // Applies new cache states optimistically, then runs write(pending) on the shared queue and takes the
+  // stored amounts from the Map of records it resolves to. All writes share one queue because changes to
+  // different transactions in the same month rewrite the same shard. On failure the caches roll back.
+  function commitChanges(changes, write) {
+    const pending = changes.map(({ key, transaction, tags, amounts }) => {
+      const version = (tagSetVersions.get(key) || 0) + 1, previousTags = cachedTags(key), previousAmounts = amountsOf(key);
+      tagSetVersions.set(key, version); tagCache.set(key, tags); amountCache.set(key, amounts);
+      return { key, version, transaction, tags, previousTags, previousAmounts };
     });
     refreshViews();
     const send = async () => {
       try {
-        const records = await store.setAssignments(pending.map(({ transaction, tagIndices }) => ({ entry: transaction, tagIndices })));
-        for (const change of pending) if (tagSetVersions.get(change.key) === change.version) amountCache.set(change.key, records.get(change.key)?.amountCents ?? null);
+        const records = await write(pending);
+        for (const change of pending) if (tagSetVersions.get(change.key) === change.version) { const record = records.get(change.key); amountCache.set(change.key, record ? { amountCents: record.amountCents, reviewedCents: record.reviewedCents } : noAmounts); }
       } catch (error) {
-        for (const change of pending) if (tagSetVersions.get(change.key) === change.version) { tagCache.set(change.key, change.previousTags); amountCache.set(change.key, change.previousAmount); }
+        for (const change of pending) if (tagSetVersions.get(change.key) === change.version) { tagCache.set(change.key, change.previousTags); amountCache.set(change.key, change.previousAmounts); }
         console.error("CapOne Tagger:", error);
       }
       refreshViews();
     };
     writeQueue = writeQueue.catch(() => undefined).then(send);
     return writeQueue;
+  }
+  // changes: [{ transaction, ids: Set of tag ids }]
+  function applyTagChanges(changes) {
+    return commitChanges(changes.map(({ transaction, ids }) => {
+      const key = store.transactionKey(transaction), previousTags = cachedTags(key), tags = allTags.filter(tag => ids.has(tag.id));
+      const added = tags.some(tag => !previousTags.some(previous => previous.id === tag.id));
+      return { key, transaction, tags, amounts: !tags.length ? noAmounts : added ? { amountCents: store.amountCents(transaction), reviewedCents: null } : amountsOf(key) };
+    }), pending => store.setAssignments(pending.map(({ transaction, tags }) => ({ entry: transaction, tagIndices: tags.map(tag => tag.id) }))));
+  }
+  function reviewAmounts(transactions) {
+    return commitChanges(transactions.map(transaction => {
+      const key = store.transactionKey(transaction);
+      return { key, transaction, tags: cachedTags(key), amounts: { ...amountsOf(key), reviewedCents: store.amountCents(transaction) } };
+    }), pending => store.reviewAmounts(pending.map(({ transaction }) => transaction)));
   }
   const tagIdsOf = transaction => new Set(cachedTags(store.transactionKey(transaction)).map(tag => tag.id));
   // Adds (on = true) or removes one tag across every transaction the picker targets.
@@ -218,6 +237,15 @@
     const query = picker.input.value.trim().toLocaleLowerCase(), current = targets.map(tagIdsOf);
     picker.heading.hidden = !picker.bulk;
     picker.heading.textContent = `Tagging ${targets.length} selected transaction${targets.length === 1 ? "" : "s"}`;
+    const drifted = targets.filter(transaction => amountDrift(transaction, cachedTags(store.transactionKey(transaction))));
+    picker.drift.hidden = !drifted.length; picker.drift.replaceChildren();
+    if (drifted.length) {
+      const text = document.createElement("span"), review = document.createElement("button"), only = amountDrift(drifted[0], cachedTags(store.transactionKey(drifted[0])));
+      text.textContent = drifted.length === 1 && !picker.bulk ? `Amount changed from ${formatMoney(only.tagged / 100)} to ${formatMoney(only.current / 100)} since tagging.` : `${drifted.length} of these changed amount since tagging.`;
+      review.type = "button"; review.className = "cpt-drift-review"; review.textContent = "Mark reviewed";
+      review.addEventListener("click", () => reviewAmounts(drifted));
+      picker.drift.append(warningIcon(), text, review);
+    }
     picker.list.replaceChildren();
     const exact = allTags.find(tag => tag.name.toLocaleLowerCase() === query);
     if (query && !exact) { const create = document.createElement("button"); create.type = "button"; create.className = "cpt-picker-create"; create.textContent = `Create "${picker.input.value.trim()}"`; create.addEventListener("click", () => createTagFromPicker(picker)); picker.list.append(create); }
@@ -240,9 +268,10 @@
     closePicker(); hideTooltip(anchor);
     const element = document.createElement("div"); element.className = "cpt-picker"; element.setAttribute("role", "dialog"); element.setAttribute("aria-label", bulk ? "Tag selected transactions" : "Edit tags");
     const heading = document.createElement("div"); heading.className = "cpt-picker-heading"; heading.hidden = true;
+    const drift = document.createElement("div"); drift.className = "cpt-picker-drift"; drift.hidden = true;
     const input = document.createElement("input"); input.type = "text"; input.placeholder = "Filter or create a tag…"; input.className = "cpt-picker-input";
-    const list = document.createElement("div"); list.className = "cpt-picker-list"; element.append(heading, input, list); document.body.append(element);
-    const picker = { anchor, targets, bulk, element, heading, input, list, onOutside: null, onKeydown: null };
+    const list = document.createElement("div"); list.className = "cpt-picker-list"; element.append(heading, drift, input, list); document.body.append(element);
+    const picker = { anchor, targets, bulk, element, heading, drift, input, list, onOutside: null, onKeydown: null };
     picker.onOutside = event => { if (!element.contains(event.target) && !anchor.contains(event.target)) { suppressRowClick = true; closePicker(); } };
     picker.onKeydown = event => { if (event.key === "Escape") { event.preventDefault(); closePicker(true); } };
     activePicker = picker; document.addEventListener("mousedown", picker.onOutside, true); document.addEventListener("keydown", picker.onKeydown, true);
@@ -268,16 +297,40 @@
     lastHoveredRow = row; paintSelection(); updateBulkBar();
     if (activePicker?.bulk) renderPicker(activePicker);
   }
+  const copyMoney = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+  const vendorName = (key, transaction) => (displayNames.get(key) || transaction.transactionMerchant?.name || transaction.transactionDescription || "").replace(/\s+/g, " ").trim();
+  // Selected rows as "VENDOR   $amt" lines: names padded to the longest, amounts right-aligned so the
+  // decimal points line up in a monospaced font. Rows on screen come first, in page order.
+  function selectionText() {
+    const onScreen = [...document.querySelectorAll("[data-cpt-selected]")].map(row => row.dataset.cptKey).filter(key => selected.has(key));
+    const lines = [...new Set([...onScreen, ...selected.keys()])].map(key => { const transaction = selected.get(key); return [vendorName(key, transaction), copyMoney.format((displayCents(transaction) ?? 0) / 100)]; });
+    const nameWidth = Math.max(...lines.map(([name]) => name.length)), amountWidth = Math.max(...lines.map(([, amount]) => amount.length));
+    return lines.map(([name, amount]) => `${name.padEnd(nameWidth)}    ${amount.padStart(amountWidth)}`).join("\n");
+  }
+  async function writeClipboard(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch {}
+    const area = document.createElement("textarea"); area.value = text; area.setAttribute("readonly", ""); area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.append(area); area.select();
+    try { return document.execCommand("copy"); } catch { return false; } finally { area.remove(); }
+  }
+  async function copySelection(button) {
+    const copied = await writeClipboard(selectionText());
+    button.replaceChildren(copied ? checkIcon() : copyIcon()); button.title = copied ? "Copied" : "Copy failed";
+    clearTimeout(button._cptTimer); button._cptTimer = setTimeout(() => { button._cptTimer = 0; button.replaceChildren(copyIcon()); updateBulkBar(); }, 1500);
+  }
   function ensureBulkBar() {
     if (bulkBar?.isConnected) return bulkBar;
     const bar = document.createElement("div"); bar.className = "cpt-bulk-bar"; bar.hidden = true; bar.setAttribute("role", "toolbar"); bar.setAttribute("aria-label", "Selected transactions");
     const reset = document.createElement("button"); reset.type = "button"; reset.className = "cpt-bulk-reset"; reset.append(resetIcon());
     const tag = document.createElement("button"); tag.type = "button"; tag.className = "cpt-bulk-tag"; tag.setAttribute("aria-haspopup", "dialog");
     const count = document.createElement("span"); count.className = "cpt-bulk-count"; tag.append(tagIcon(), count);
+    const total = document.createElement("span"); total.className = "cpt-bulk-total";
+    const copy = document.createElement("button"); copy.type = "button"; copy.className = "cpt-bulk-copy"; copy.append(copyIcon());
+    copy.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); copySelection(copy); });
     reset.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); closePicker(); clearSelection(); });
     tag.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); openPicker(tag, () => [...selected.values()], true); });
-    bar.append(reset, tag); document.body.append(bar);
-    bar._cptReset = reset; bar._cptTag = tag; bar._cptCount = count; bulkBar = bar;
+    bar.append(reset, total, copy, tag); document.body.append(bar);
+    bar._cptReset = reset; bar._cptTag = tag; bar._cptCount = count; bar._cptTotal = total; bar._cptCopy = copy; bulkBar = bar;
     return bar;
   }
   // Floats beside the last hovered row. It holds still while its picker is open so the picker stays attached.
@@ -285,6 +338,9 @@
     if (!selected.size) { if (bulkBar) bulkBar.hidden = true; return; }
     const bar = ensureBulkBar(), label = `${selected.size} selected`;
     bar._cptCount.textContent = String(selected.size);
+    bar._cptTotal.textContent = formatMoney([...selected.values()].reduce((sum, transaction) => sum + (displayCents(transaction) ?? 0), 0) / 100);
+    bar._cptTotal.title = `Total of ${label}`;
+    if (!bar._cptCopy._cptTimer) { bar._cptCopy.title = `Copy ${label} as text`; bar._cptCopy.setAttribute("aria-label", `Copy ${label} as text`); }
     bar._cptReset.title = `Clear selection (${label})`; bar._cptReset.setAttribute("aria-label", `Clear selection, ${label}`);
     bar._cptTag.title = `Tag ${label}`; bar._cptTag.setAttribute("aria-label", `Tag ${label}`); bar._cptTag.setAttribute("aria-expanded", String(activePicker?.anchor === bar._cptTag));
     if (activePicker?.anchor === bar._cptTag && !bar.hidden) return;
@@ -355,7 +411,7 @@
       const missing = taggablePairs.map(([, transaction]) => transaction).filter(transaction => !tagCache.has(store.transactionKey(transaction)));
       if (missing.length) {
         const assignments = await store.getAssignments(missing);
-        for (const [key, record] of assignments) { tagCache.set(key, record.tags.map(id => allTags.find(tag => tag.id === id)).filter(Boolean)); amountCache.set(key, record.amountCents); }
+        for (const [key, record] of assignments) { tagCache.set(key, record.tags.map(id => allTags.find(tag => tag.id === id)).filter(Boolean)); amountCache.set(key, { amountCents: record.amountCents, reviewedCents: record.reviewedCents }); }
       }
       storageLoaded = true;
     } catch (error) {
@@ -365,7 +421,7 @@
       const key = store.transactionKey(transaction);
       const id = key || "missing-key";
       const row = rowOf(cell);
-      if (key && row) { row.dataset.cptKey = key; transactionsByKey.set(key, transaction); if (selected.has(key)) selected.set(key, transaction); }
+      if (key && row) { row.dataset.cptKey = key; transactionsByKey.set(key, transaction); displayNames.set(key, row.querySelector(".c1-ease-txns-description__description")?.textContent || ""); if (selected.has(key)) selected.set(key, transaction); }
       else forgetRow(row);
       const existing = cell.querySelector(":scope > .cpt-badge");
       if (cell.dataset.caponeTagger === id && existing) { existing._cptTransaction = transaction; updateBadge(existing, key ? cachedTags(key) : []); continue; }

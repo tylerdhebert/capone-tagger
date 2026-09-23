@@ -73,11 +73,11 @@ test("setAssignment replaces tag sets and removes empty transactions and shards"
   expect(data["a_2026-04"]).toBeUndefined();
 });
 
-test("getAssignments reads only shards used by the supplied entries", async () => {
+test("getAssignments reads only the shards around the supplied entries' months", async () => {
   const { api, calls } = makeStore({ "a_2026-03": { "1": [0] }, "a_2026-04": { "2": [1] }, "a_2020-01": { old: [2] } });
   const assignments = await api.getAssignments([entry("1", "2026-03-10T12:00:00"), entry("2", "2026-04-10T12:00:00")]);
-  expect([...assignments.entries()]).toEqual([["1", { tags: [0], amountCents: null }], ["2", { tags: [1], amountCents: null }]]);
-  expect(calls.get).toEqual([["a_2026-03", "a_2026-04"]]);
+  expect([...assignments.entries()]).toEqual([["1", { tags: [0], amountCents: null, reviewedCents: null }], ["2", { tags: [1], amountCents: null, reviewedCents: null }]]);
+  expect(calls.get).toEqual([["a_2026-03", "a_2026-02", "a_2026-04", "a_2026-05"]]);
 });
 
 const priced = (lifecycleId: string, displayDate: string, amount: number) => ({ ...entry(lifecycleId, displayDate), transactionAmount: amount });
@@ -86,7 +86,7 @@ test("setAssignment records the amount whenever a tag is added and keeps it when
   const { api, data } = makeStore();
   await api.setAssignment(priced("1", "2026-04-12T12:00:00", 50), [0]);
   expect(data["a_2026-04"]).toEqual({ "1": { t: [0], a: 5000 } });
-  expect(await api.setAssignment(priced("1", "2026-04-12T12:00:00", 60), [0])).toEqual({ tags: [0], amountCents: 5000 });
+  expect(await api.setAssignment(priced("1", "2026-04-12T12:00:00", 60), [0])).toEqual({ tags: [0], amountCents: 5000, reviewedCents: null });
   await api.setAssignment(priced("1", "2026-04-12T12:00:00", 60), [0, 1]);
   expect(data["a_2026-04"]).toEqual({ "1": { t: [0, 1], a: 6000 } });
   await api.setAssignment(priced("1", "2026-04-12T12:00:00", 72.5), [1]);
@@ -95,7 +95,7 @@ test("setAssignment records the amount whenever a tag is added and keeps it when
 
 test("setAssignment reads bare-array records written by older versions", async () => {
   const { api, data } = makeStore({ "a_2026-04": { "1": [0] } });
-  expect((await api.getAssignments([entry("1", "2026-04-12T12:00:00")])).get("1")).toEqual({ tags: [0], amountCents: null });
+  expect((await api.getAssignments([entry("1", "2026-04-12T12:00:00")])).get("1")).toEqual({ tags: [0], amountCents: null, reviewedCents: null });
   await api.setAssignment(priced("1", "2026-04-12T12:00:00", 60), []);
   expect(data["a_2026-04"]).toBeUndefined();
   await api.setAssignment(priced("2", "2026-04-12T12:00:00", 60), [0]);
@@ -111,17 +111,50 @@ test("setAssignments writes many transactions across shards in one read and one 
     { entry: priced("2", "2026-04-03T12:00:00", -20), tagIndices: [1] },
     { entry: priced("3", "2026-05-03T12:00:00", 30), tagIndices: [] }
   ]);
-  expect(calls.get).toEqual([["a_2026-04", "a_2026-05"]]);
+  expect(calls.get).toEqual([["a_2026-04", "a_2026-03", "a_2026-05", "a_2026-06"]]);
   expect(data["a_2026-04"]).toEqual({ keep: [2], "2": { t: [1], a: -2000 } });
   expect(data["a_2026-05"]).toBeUndefined();
-  expect(records.get("2")).toEqual({ tags: [1], amountCents: -2000 });
-  expect(records.get("1")).toEqual({ tags: [], amountCents: null });
+  expect(records.get("2")).toEqual({ tags: [1], amountCents: -2000, reviewedCents: null });
+  expect(records.get("1")).toEqual({ tags: [], amountCents: null, reviewedCents: null });
 });
 
 test("setAssignments rejects the whole batch when any transaction cannot be stored", async () => {
   const { api, data } = makeStore();
   await expect(api.setAssignments([{ entry: priced("1", "2026-04-02T12:00:00", 10), tagIndices: [0] }, { entry: { transactionAmount: 5 }, tagIndices: [0] }])).rejects.toThrow();
   expect(data).toEqual({});
+});
+
+test("a record stored under the previous month is found and moved when the date crosses a month", async () => {
+  const { api, data } = makeStore({ "a_2026-04": { "1": { t: [0], a: 5000 }, other: [1] } });
+  const posted = priced("1", "2026-05-01T12:00:00", 60);
+  expect((await api.getAssignments([posted])).get("1")).toEqual({ tags: [0], amountCents: 5000, reviewedCents: null });
+  await api.setAssignment(posted, [0]);
+  expect(data["a_2026-04"]).toEqual({ other: [1] });
+  expect(data["a_2026-05"]).toEqual({ "1": { t: [0], a: 5000 } });
+});
+
+test("month neighbours wrap across years", async () => {
+  const { api, calls } = makeStore();
+  await api.getAssignments([entry("1", "2026-01-15T12:00:00"), entry("2", "2026-12-15T12:00:00")]);
+  expect(calls.get).toEqual([["a_2026-01", "a_2025-12", "a_2026-02", "a_2026-12", "a_2026-11", "a_2027-01"]]);
+});
+
+test("reviewAmounts marks the current amount reviewed and a later added tag clears it", async () => {
+  const { api, data } = makeStore({ "a_2026-04": { "1": { t: [0], a: 5000 }, "2": [1] } });
+  const records = await api.reviewAmounts([priced("1", "2026-04-12T12:00:00", 60), priced("2", "2026-04-12T12:00:00", 9), priced("3", "2026-04-12T12:00:00", 9)]);
+  expect(records.get("1")).toEqual({ tags: [0], amountCents: 5000, reviewedCents: 6000 });
+  expect(data["a_2026-04"]).toEqual({ "1": { t: [0], a: 5000, k: 6000 }, "2": [1] });
+  await api.setAssignment(priced("1", "2026-04-12T12:00:00", 60), [0, 1]);
+  expect(data["a_2026-04"]["1"]).toEqual({ t: [0, 1], a: 6000 });
+  data["a_2026-04"]["1"] = { t: [0, 1], a: 5000, k: 6000 };
+  await api.setAssignment(priced("1", "2026-04-12T12:00:00", 60), [1]);
+  expect(data["a_2026-04"]["1"]).toEqual({ t: [1], a: 5000, k: 6000 });
+});
+
+test("deleteTag keeps a reviewed amount", async () => {
+  const { api, data } = makeStore({ tagNames: ["one", "two"], "a_2026-01": { "100": { t: [0, 1], a: 5000, k: 6000 } } });
+  await api.deleteTag(1);
+  expect(data["a_2026-01"]).toEqual({ "100": { t: [0], a: 5000, k: 6000 } });
 });
 
 test("prune removes only shards whose month ended before the cutoff", async () => {
@@ -164,7 +197,7 @@ test("a synthetic-keyed payment round-trips through setAssignment/getAssignments
   await api.setAssignment(transaction, [0, 1]);
   expect(data["a_2026-04"]).toEqual({ [key]: { t: [0, 1], a: 12345 } });
   const assignments = await api.getAssignments([transaction]);
-  expect([...assignments.entries()]).toEqual([[key, { tags: [0, 1], amountCents: 12345 }]]);
+  expect([...assignments.entries()]).toEqual([[key, { tags: [0, 1], amountCents: 12345, reviewedCents: null }]]);
 });
 
 test("transactionKey returns null with no lifecycle id and no usable date", () => {

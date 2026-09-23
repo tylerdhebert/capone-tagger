@@ -33,15 +33,37 @@ function assignmentIndices(indices) {
 }
 
 // A shard value is either a bare array of tag indices (written before 0.2.0) or
-// { t: indices, a: signed amount in cents when a tag was last added }.
+// { t: indices, a: signed amount in cents when a tag was last added,
+//   k: amount in cents the user marked as reviewed (optional, since 0.3.0) }.
+const emptyRecord = () => ({ tags: [], amountCents: null, reviewedCents: null });
+
 function readRecord(value) {
-  if (Array.isArray(value)) return { tags: assignmentIndices(value), amountCents: null };
-  if (!value || typeof value !== "object") return { tags: [], amountCents: null };
-  return { tags: assignmentIndices(value.t), amountCents: Number.isInteger(value.a) ? value.a : null };
+  if (Array.isArray(value)) return { ...emptyRecord(), tags: assignmentIndices(value) };
+  if (!value || typeof value !== "object") return emptyRecord();
+  return { tags: assignmentIndices(value.t), amountCents: Number.isInteger(value.a) ? value.a : null, reviewedCents: Number.isInteger(value.k) ? value.k : null };
 }
 
 function writeRecord(record) {
-  return record.amountCents === null ? record.tags : { t: record.tags, a: record.amountCents };
+  if (record.amountCents === null) return record.tags;
+  return record.reviewedCents === null ? { t: record.tags, a: record.amountCents } : { t: record.tags, a: record.amountCents, k: record.reviewedCents };
+}
+
+// A transaction's own month first, then the months either side. A pending transaction that posts
+// with a date in the next month keeps its lifecycle id, so its record may sit one shard away.
+function candidateShardKeys(displayDate) {
+  const own = shardKey(displayDate);
+  if (!own) return [];
+  const [, year, month] = /^a_(\d{4})-(\d{2})$/.exec(own);
+  const offset = delta => { const date = new Date(Number(year), Number(month) - 1 + delta, 1); return `a_${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`; };
+  return [own, offset(-1), offset(1)];
+}
+
+function findRecord(shards, keys, id) {
+  for (const key of keys) {
+    const shard = shards.get(key);
+    if (shard && Object.hasOwn(shard, id)) return readRecord(shard[id]);
+  }
+  return emptyRecord();
 }
 
 function amountCents(entry) {
@@ -124,63 +146,76 @@ async function deleteTag(index) {
   if (emptyShards.length) await syncRemove(emptyShards);
 }
 
-// Resolves to a Map of transaction key -> { tags, amountCents }.
+// Resolves to a Map of transaction key -> { tags, amountCents, reviewedCents }.
 async function getAssignments(entries) {
   const result = new Map();
-  const wanted = new Map();
+  const planned = [];
   for (const entry of entries || []) {
     const id = transactionKey(entry);
     if (!id) continue;
-    result.set(id, { tags: [], amountCents: null });
-    const key = shardKey(entry.transactionDisplayDate);
-    if (!key) continue;
-    const ids = wanted.get(key) || new Set();
-    ids.add(id);
-    wanted.set(key, ids);
+    result.set(id, emptyRecord());
+    const keys = candidateShardKeys(entry.transactionDisplayDate);
+    if (keys.length) planned.push({ id, keys });
   }
-  const keys = [...wanted.keys()];
+  const keys = [...new Set(planned.flatMap(item => item.keys))];
   if (!keys.length) return result;
   const values = await syncGet(keys);
-  for (const [key, ids] of wanted) {
-    const shard = shardObject(values[key]);
-    for (const id of ids) result.set(id, readRecord(shard[id]));
-  }
+  const shards = new Map(keys.map(key => [key, shardObject(values[key])]));
+  for (const { id, keys: candidates } of planned) result.set(id, findRecord(shards, candidates, id));
   return result;
 }
 
-// Applies every change with one read and one write, so changes that share a shard cannot
-// overwrite each other. The stored amount is refreshed whenever a change adds a tag the
-// transaction did not already have, and kept as-is when tags are only removed.
+// Read-modify-write for many transactions with one read and one write, so changes that share a
+// shard cannot overwrite each other. compute(previousRecord, item) returns the record to store;
+// a record with no tags is deleted. Each record is written to its transaction's own month and
+// removed from the neighbouring months, which moves records left behind by a date change.
 // Resolves to a Map of transaction key -> the record now stored.
-async function setAssignments(changes) {
-  const planned = (changes || []).map(({ entry, tagIndices }) => {
-    const id = transactionKey(entry);
+async function updateRecords(items, compute) {
+  const planned = (items || []).map(item => {
+    const id = transactionKey(item.entry);
     if (!id) throw new Error("This transaction has no stable identity to tag");
-    const key = shardKey(entry.transactionDisplayDate);
-    if (!key) throw new Error("This transaction has no usable display date for storage");
-    return { id, key, entry, next: assignmentIndices(tagIndices) };
+    const keys = candidateShardKeys(item.entry.transactionDisplayDate);
+    if (!keys.length) throw new Error("This transaction has no usable display date for storage");
+    return { id, keys, item };
   });
   const result = new Map();
   if (!planned.length) return result;
-  const values = await syncGet([...new Set(planned.map(change => change.key))]);
-  const shards = new Map();
-  for (const { id, key, entry, next } of planned) {
-    if (!shards.has(key)) shards.set(key, shardObject(values[key]));
-    const shard = shards.get(key), previous = readRecord(shard[id]);
-    const added = next.some(index => !previous.tags.includes(index));
-    const record = { tags: next, amountCents: next.length ? (added ? amountCents(entry) : previous.amountCents) : null };
-    if (next.length) shard[id] = writeRecord(record);
-    else delete shard[id];
+  const allKeys = [...new Set(planned.flatMap(change => change.keys))];
+  const values = await syncGet(allKeys);
+  const shards = new Map(allKeys.map(key => [key, shardObject(values[key])])), dirty = new Set();
+  for (const { id, keys, item } of planned) {
+    const record = compute(findRecord(shards, keys, id), item);
+    for (const key of keys) if (Object.hasOwn(shards.get(key), id)) { delete shards.get(key)[id]; dirty.add(key); }
+    if (record.tags.length) { shards.get(keys[0])[id] = writeRecord(record); dirty.add(keys[0]); }
     result.set(id, record);
   }
   const updates = { v: 1 }, emptyShards = [];
-  for (const [key, shard] of shards) {
+  for (const key of dirty) {
+    const shard = shards.get(key);
     if (Object.keys(shard).length) updates[key] = shard;
     else emptyShards.push(key);
   }
   if (Object.keys(updates).length > 1) await syncSet(updates);
   if (emptyShards.length) await syncRemove(emptyShards);
   return result;
+}
+
+// changes: [{ entry, tagIndices }]. The stored amount is refreshed whenever a change adds a tag the
+// transaction did not already have (which also clears any review), and kept when tags are only removed.
+function setAssignments(changes) {
+  return updateRecords(changes, (previous, { entry, tagIndices }) => {
+    const tags = assignmentIndices(tagIndices);
+    if (!tags.length) return emptyRecord();
+    if (tags.some(index => !previous.tags.includes(index))) return { tags, amountCents: amountCents(entry), reviewedCents: null };
+    return { ...previous, tags };
+  });
+}
+
+// Marks each tagged transaction's current amount as reviewed, which silences the changed-amount
+// warning until the amount changes again. The amount recorded at tagging time is kept.
+function reviewAmounts(entries) {
+  return updateRecords((entries || []).map(entry => ({ entry })), (previous, { entry }) =>
+    previous.tags.length && previous.amountCents !== null ? { ...previous, reviewedCents: amountCents(entry) } : previous);
 }
 
 async function setAssignment(entry, tagIndices) {
@@ -237,6 +272,6 @@ async function storageBytesInUse() {
 
 globalThis.caponeTaggerStore = {
   shardKey, transactionKey, amountCents, loadTags, createTag, deleteTag,
-  getAssignments, setAssignment, setAssignments, prune, exportAll,
+  getAssignments, setAssignment, setAssignments, reviewAmounts, prune, exportAll,
   loadRetentionDays, saveRetentionDays, clearAllTags, storageBytesInUse
 };
