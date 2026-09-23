@@ -1,8 +1,11 @@
-c1-ease-cell.cdk-column-amount .cpt-badge { margin-left: 7px; border: 1px solid #587084; border-radius: 999px; background: #fff; color: #233746; font: 600 11px/1 system-ui, sans-serif; padding: 3px 6px; cursor: pointer; vertical-align: middle; display: inline-flex; align-items: center; gap: 3px; max-width: 190px; overflow: hidden; }
-c1-ease-cell.cdk-column-amount .cpt-badge.cpt-untagged { background: transparent; border: 1px dashed #5b6b77; color: #5b6b77; }
+c1-ease-cell.cdk-column-amount .cpt-badge { margin-left: 8px; border: 0; border-radius: 999px; background: transparent; color: #233746; font: 600 12.5px/1.2 system-ui, sans-serif; padding: 0; cursor: pointer; vertical-align: middle; display: inline-flex; align-items: center; gap: 4px; max-width: 380px; overflow: hidden; }
+c1-ease-cell.cdk-column-amount .cpt-badge.cpt-untagged { background: transparent; border: 1px dashed #5b6b77; color: #5b6b77; padding: 3px 9px; }
+c1-ease-cell.cdk-column-amount .cpt-badge:disabled { cursor: not-allowed; opacity: .55; }
 c1-ease-cell.cdk-column-amount .cpt-badge:focus-visible { outline: 3px solid #126cbd; outline-offset: 2px; }
-.cpt-tag-chip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 66px; border-radius: 999px; background: #1f6f9b; color: #fff; padding: 2px 4px; }
-.cpt-more-chip { background: #526b7a; }
+.cpt-tag-chip { flex: 0 1 auto; min-width: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 999px; background: #1f6f9b; color: #fff; padding: 4px 10px; box-shadow: 0 1px 2px #0003; }
+.cpt-badge:not(:disabled):hover .cpt-tag-chip { background: #185a7f; }
+.cpt-more-chip, .cpt-badge:not(:disabled):hover .cpt-more-chip { flex-shrink: 0; background: #526b7a; }
+.cpt-drift-icon { flex: 0 0 auto; width: 18px; height: 18px; }
 .cpt-tooltip { position: fixed; z-index: 2147483647; max-width: 320px; white-space: pre-line; background: #17232c; color: #fff; border-radius: 6px; box-shadow: 0 4px 16px #0006; font: 12px/1.45 system-ui, sans-serif; padding: 9px 11px; pointer-events: none; }
 .cpt-picker { position: fixed; z-index: 2147483647; width: min(290px, calc(100vw - 16px)); max-height: min(340px, calc(100vh - 16px)); overflow: auto; box-sizing: border-box; padding: 7px; border: 1px solid #8ca0ad; border-radius: 8px; background: #fff; color: #1e313d; box-shadow: 0 8px 24px #0004; font: 13px/1.35 system-ui, sans-serif; }
 .cpt-picker-input { width: 100%; box-sizing: border-box; padding: 6px 7px; border: 1px solid #718591; border-radius: 5px; font: inherit; }
@@ -15,3 +18,16 @@ c1-ease-cell.cdk-column-amount .cpt-badge:focus-visible { outline: 3px solid #12
 .cpt-delete-tag { flex: 0 0 auto; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #8a2634; cursor: pointer; font: 18px/1 system-ui, sans-serif; }
 .cpt-delete-tag:hover, .cpt-delete-tag:focus-visible { background: #fbeaec; }
 .cpt-picker :is(button, input):focus-visible { outline: 2px solid #126cbd; outline-offset: 1px; }
+.cpt-picker-heading { margin: 0 2px 6px; color: #4a5d6a; font-size: 12px; font-weight: 600; }
+[data-cpt-key] { cursor: pointer; }
+[data-cpt-selected], [data-cpt-selected] > * { background-color: #d8e9fc !important; }
+[data-cpt-selected] { box-shadow: inset 4px 0 0 #1a6fd8; }
+.cpt-bulk-bar { position: fixed; z-index: 2147483646; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid #b4c4d0; border-radius: 999px; background: #fff; box-shadow: 0 4px 14px #0003; }
+.cpt-bulk-bar[hidden] { display: none; }
+.cpt-bulk-bar button { height: 32px; min-width: 32px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; border: 0; border-radius: 999px; cursor: pointer; font: 700 13px/1 system-ui, sans-serif; }
+.cpt-bulk-reset { background: #eef2f5; color: #34495a; }
+.cpt-bulk-reset:hover { background: #dde5eb; }
+.cpt-bulk-tag { background: #1a6fd8; color: #fff; }
+.cpt-bulk-tag:hover { background: #155bb3; }
+.cpt-bulk-bar button:focus-visible { outline: 2px solid #126cbd; outline-offset: 2px; }
+.cpt-bulk-icon { width: 17px; height: 17px; flex: 0 0 auto; }

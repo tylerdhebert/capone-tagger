@@ -38,16 +38,26 @@ Each narrowing step is skipped if it would eliminate every candidate, so a weak 
 
 Two ledger entries with the same date, amount and description resolve to the same key.
 
+### Tagging
+
+Clicking a tag badge opens a picker for that one transaction. Hovering it shows the transaction's details, including the amount when it was tagged.
+
+Clicking anywhere else on a matched row selects it, and clicking it again deselects it. Selected rows are highlighted in blue. The click is captured before Capital One's own row handler, so it does not open the row. Clicks with a modifier key held, and clicks on links or form fields inside the row, pass through unchanged. While any row is selected, a toolbar floats beside the last hovered row: the reset button clears the selection, and the tag button opens the picker for every selected transaction. In that picker a tag shows as checked when all selected transactions have it and as mixed when only some do; checking it adds it to all of them, unchecking removes it from all of them.
+
+### Amount changes
+
+Each tagged transaction stores its amount from the last time a tag was added to it; removing tags leaves the stored amount alone. A posted transaction whose current amount differs from the stored one, such as a restaurant charge that posts with the tip added, shows a yellow warning icon beside its tags.
+
 ## Storage
 
 | Key | Contents |
 |---|---|
 | `v` | Schema version |
 | `tagNames` | Array of tag names. A tag's id is its index; deleting a tag sets its slot to `null` so other indices stay valid. |
-| `a_YYYY-MM` | One shard per calendar month, mapping transaction key to an array of tag indices. |
+| `a_YYYY-MM` | One shard per calendar month, mapping transaction key to `{ "t": [tag indices], "a": signed amount in cents when a tag was last added }`. Records written before 0.2.0 are a bare array of tag indices with no amount; they are read as-is and rewritten in the new form when a tag is next added. |
 | `retentionDays` | Integer, default 150. |
 
-`browser.storage.sync` allows roughly 100KB total and 8KB per item, which is why shards are per month. Pruning deletes whole shards older than the retention window, and runs once per page load after the first injection.
+`browser.storage.sync` allows roughly 100KB total and 8KB per item, which is why shards are per month. All tag writes go through one queue and `store.setAssignments`, which reads and writes every affected shard once, so changes to several transactions in the same month cannot overwrite each other. Pruning deletes whole shards older than the retention window, and runs once per page load after the first injection.
 
 ## Options
 

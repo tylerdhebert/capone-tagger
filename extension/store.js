@@ -32,6 +32,25 @@ function assignmentIndices(indices) {
   return [...new Set((Array.isArray(indices) ? indices : []).filter(index => Number.isInteger(index) && index >= 0))];
 }
 
+// A shard value is either a bare array of tag indices (written before 0.2.0) or
+// { t: indices, a: signed amount in cents when a tag was last added }.
+function readRecord(value) {
+  if (Array.isArray(value)) return { tags: assignmentIndices(value), amountCents: null };
+  if (!value || typeof value !== "object") return { tags: [], amountCents: null };
+  return { tags: assignmentIndices(value.t), amountCents: Number.isInteger(value.a) ? value.a : null };
+}
+
+function writeRecord(record) {
+  return record.amountCents === null ? record.tags : { t: record.tags, a: record.amountCents };
+}
+
+function amountCents(entry) {
+  const raw = entry?.transactionAmount;
+  if (raw === undefined || raw === null || raw === "") return null;
+  const cents = Math.round(Number(raw) * 100);
+  return Number.isFinite(cents) ? cents : null;
+}
+
 function isShardKey(key) { return /^a_\d{4}-\d{2}$/.test(key); }
 function shardObject(value) { return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {}; }
 
@@ -92,9 +111,10 @@ async function deleteTag(index) {
   for (const [key, value] of Object.entries(values)) {
     if (!isShardKey(key)) continue;
     const shard = shardObject(value);
-    for (const [lifecycleId, indices] of Object.entries(shard)) {
-      const next = assignmentIndices(indices).filter(tagIndex => tagIndex !== index);
-      if (next.length) shard[lifecycleId] = next;
+    for (const [lifecycleId, value] of Object.entries(shard)) {
+      const record = readRecord(value);
+      record.tags = record.tags.filter(tagIndex => tagIndex !== index);
+      if (record.tags.length) shard[lifecycleId] = writeRecord(record);
       else delete shard[lifecycleId];
     }
     if (Object.keys(shard).length) updates[key] = shard;
@@ -104,13 +124,14 @@ async function deleteTag(index) {
   if (emptyShards.length) await syncRemove(emptyShards);
 }
 
+// Resolves to a Map of transaction key -> { tags, amountCents }.
 async function getAssignments(entries) {
   const result = new Map();
   const wanted = new Map();
   for (const entry of entries || []) {
     const id = transactionKey(entry);
     if (!id) continue;
-    result.set(id, []);
+    result.set(id, { tags: [], amountCents: null });
     const key = shardKey(entry.transactionDisplayDate);
     if (!key) continue;
     const ids = wanted.get(key) || new Set();
@@ -122,23 +143,49 @@ async function getAssignments(entries) {
   const values = await syncGet(keys);
   for (const [key, ids] of wanted) {
     const shard = shardObject(values[key]);
-    for (const id of ids) result.set(id, assignmentIndices(shard[id]));
+    for (const id of ids) result.set(id, readRecord(shard[id]));
   }
   return result;
 }
 
+// Applies every change with one read and one write, so changes that share a shard cannot
+// overwrite each other. The stored amount is refreshed whenever a change adds a tag the
+// transaction did not already have, and kept as-is when tags are only removed.
+// Resolves to a Map of transaction key -> the record now stored.
+async function setAssignments(changes) {
+  const planned = (changes || []).map(({ entry, tagIndices }) => {
+    const id = transactionKey(entry);
+    if (!id) throw new Error("This transaction has no stable identity to tag");
+    const key = shardKey(entry.transactionDisplayDate);
+    if (!key) throw new Error("This transaction has no usable display date for storage");
+    return { id, key, entry, next: assignmentIndices(tagIndices) };
+  });
+  const result = new Map();
+  if (!planned.length) return result;
+  const values = await syncGet([...new Set(planned.map(change => change.key))]);
+  const shards = new Map();
+  for (const { id, key, entry, next } of planned) {
+    if (!shards.has(key)) shards.set(key, shardObject(values[key]));
+    const shard = shards.get(key), previous = readRecord(shard[id]);
+    const added = next.some(index => !previous.tags.includes(index));
+    const record = { tags: next, amountCents: next.length ? (added ? amountCents(entry) : previous.amountCents) : null };
+    if (next.length) shard[id] = writeRecord(record);
+    else delete shard[id];
+    result.set(id, record);
+  }
+  const updates = { v: 1 }, emptyShards = [];
+  for (const [key, shard] of shards) {
+    if (Object.keys(shard).length) updates[key] = shard;
+    else emptyShards.push(key);
+  }
+  if (Object.keys(updates).length > 1) await syncSet(updates);
+  if (emptyShards.length) await syncRemove(emptyShards);
+  return result;
+}
+
 async function setAssignment(entry, tagIndices) {
-  const id = transactionKey(entry);
-  if (!id) throw new Error("This transaction has no stable identity to tag");
-  const key = shardKey(entry.transactionDisplayDate);
-  if (!key) throw new Error("This transaction has no usable display date for storage");
-  const next = assignmentIndices(tagIndices);
-  const values = await syncGet([key]);
-  const shard = shardObject(values[key]);
-  if (next.length) shard[id] = next;
-  else delete shard[id];
-  if (Object.keys(shard).length) await syncSet({ v: 1, [key]: shard });
-  else await syncRemove(key);
+  const result = await setAssignments([{ entry, tagIndices }]);
+  return result.get(transactionKey(entry));
 }
 
 async function prune(retentionDays, now = Date.now()) {
@@ -189,7 +236,7 @@ async function storageBytesInUse() {
 }
 
 globalThis.caponeTaggerStore = {
-  shardKey, transactionKey, loadTags, createTag, deleteTag,
-  getAssignments, setAssignment, prune, exportAll,
+  shardKey, transactionKey, amountCents, loadTags, createTag, deleteTag,
+  getAssignments, setAssignment, setAssignments, prune, exportAll,
   loadRetentionDays, saveRetentionDays, clearAllTags, storageBytesInUse
 };
