@@ -144,6 +144,10 @@
   const tagIcon = () => svgIcon("cpt-bulk-icon", "0 0 24 24", [["path", { d: "M3 4.5v6.2a1.5 1.5 0 0 0 .44 1.06l8.8 8.8a1.5 1.5 0 0 0 2.12 0l6.2-6.2a1.5 1.5 0 0 0 0-2.12l-8.8-8.8A1.5 1.5 0 0 0 10.7 3H4.5A1.5 1.5 0 0 0 3 4.5z" }], ["circle", { cx: "7.5", cy: "7.5", r: "1.5" }]], strokeIcon);
   function paint(button, tags) {
     const visible = tags.slice(0, 3), drift = amountDrift(button._cptTransaction, tags);
+    // Repainting is a DOM mutation, so skip it when nothing visible would change.
+    const signature = JSON.stringify([tags.map(tag => [tag.id, tag.name]), drift && [drift.tagged, drift.current], activePicker?.anchor === button]);
+    if (button._cptSignature === signature) return;
+    button._cptSignature = signature;
     button.replaceChildren();
     button.classList.toggle("cpt-untagged", !tags.length);
     button.setAttribute("aria-haspopup", "dialog");
@@ -235,9 +239,16 @@
     const targets = picker.targets();
     if (!targets.length) { closePicker(); return; }
     const query = picker.input.value.trim().toLocaleLowerCase(), current = targets.map(tagIdsOf);
+    const drifted = targets.filter(transaction => amountDrift(transaction, cachedTags(store.transactionKey(transaction))));
+    const shown = allTags.filter(tag => !query || tag.name.toLocaleLowerCase().includes(query));
+    // Rebuilding the list between a mousedown and its mouseup swallows the click, so only rebuild when
+    // something the picker shows has changed.
+    const signature = JSON.stringify([picker.input.value.trim(), targets.length, drifted.map(transaction => [store.transactionKey(transaction), amountDrift(transaction, cachedTags(store.transactionKey(transaction)))]),
+      shown.map(tag => [tag.id, tag.name, current.filter(ids => ids.has(tag.id)).length])]);
+    if (picker.signature === signature) { positionPicker(picker.element, picker.anchor); return; }
+    picker.signature = signature;
     picker.heading.hidden = !picker.bulk;
     picker.heading.textContent = `Tagging ${targets.length} selected transaction${targets.length === 1 ? "" : "s"}`;
-    const drifted = targets.filter(transaction => amountDrift(transaction, cachedTags(store.transactionKey(transaction))));
     picker.drift.hidden = !drifted.length; picker.drift.replaceChildren();
     if (drifted.length) {
       const text = document.createElement("span"), review = document.createElement("button"), only = amountDrift(drifted[0], cachedTags(store.transactionKey(drifted[0])));
@@ -249,7 +260,7 @@
     picker.list.replaceChildren();
     const exact = allTags.find(tag => tag.name.toLocaleLowerCase() === query);
     if (query && !exact) { const create = document.createElement("button"); create.type = "button"; create.className = "cpt-picker-create"; create.textContent = `Create "${picker.input.value.trim()}"`; create.addEventListener("click", () => createTagFromPicker(picker)); picker.list.append(create); }
-    for (const tag of allTags.filter(tag => !query || tag.name.toLocaleLowerCase().includes(query))) {
+    for (const tag of shown) {
       const row = document.createElement("div"); row.className = "cpt-picker-row";
       const label = document.createElement("label"), checkbox = document.createElement("input"), text = document.createElement("span");
       const count = current.filter(ids => ids.has(tag.id)).length;
@@ -309,7 +320,7 @@
   }
   async function writeClipboard(text) {
     try { await navigator.clipboard.writeText(text); return true; } catch {}
-    const area = document.createElement("textarea"); area.value = text; area.setAttribute("readonly", ""); area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    const area = document.createElement("textarea"); area.value = text; area.className = "cpt-clipboard"; area.setAttribute("readonly", ""); area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
     document.body.append(area); area.select();
     try { return document.execCommand("copy"); } catch { return false; } finally { area.remove(); }
   }
@@ -439,5 +450,11 @@
   }
   function scheduleInject() { clearTimeout(scheduled); scheduled = setTimeout(() => inject().catch(error => console.error("CapOne Tagger:", error)), 150); }
   window.addEventListener("message", event => { if (event.source !== window || !event.data?.__caponeTagger || event.data.kind !== "transactions") return; latestEntries = normalizeEntries(event.data.payload); scheduleInject(); });
-  new MutationObserver(scheduleInject).observe(document.body, { childList: true, subtree: true });
+  // Only the page's own changes need a re-inject. Ignoring changes to the extension's own elements keeps
+  // inject from re-triggering itself (it repaints badges and pickers, which are mutations too).
+  const ownUi = ".cpt-badge, .cpt-picker, .cpt-tooltip, .cpt-bulk-bar, .cpt-clipboard";
+  const isOwn = node => node.nodeType === Node.ELEMENT_NODE ? !!node.closest(ownUi) : !!node.parentElement?.closest(ownUi);
+  new MutationObserver(records => {
+    if (records.some(record => !isOwn(record.target) && [...record.addedNodes, ...record.removedNodes].some(node => !isOwn(node)))) scheduleInject();
+  }).observe(document.body, { childList: true, subtree: true });
 })();
