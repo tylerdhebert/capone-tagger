@@ -315,8 +315,8 @@
   }
   async function copySelection(button) {
     const copied = await writeClipboard(selectionText());
-    button.replaceChildren(copied ? checkIcon() : copyIcon()); button.title = copied ? "Copied" : "Copy failed";
-    clearTimeout(button._cptTimer); button._cptTimer = setTimeout(() => { button._cptTimer = 0; button.replaceChildren(copyIcon()); updateBulkBar(); }, 1500);
+    button.replaceChildren(copied ? checkIcon() : copyIcon()); button.title = copied ? "Copied" : "Copy failed"; button.classList.toggle("cpt-copied", copied);
+    clearTimeout(button._cptTimer); button._cptTimer = setTimeout(() => { button._cptTimer = 0; button.classList.remove("cpt-copied"); button.replaceChildren(copyIcon()); updateBulkBar(); }, 1500);
   }
   function ensureBulkBar() {
     if (bulkBar?.isConnected) return bulkBar;

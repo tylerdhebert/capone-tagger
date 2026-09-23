@@ -39,3 +39,4 @@ c1-ease-cell.cdk-column-amount .cpt-badge:focus-visible { outline: 3px solid #12
 .cpt-drift-review { margin-left: auto; padding: 3px 8px; border: 1px solid #b08900; border-radius: 4px; background: #fff; color: #4a3800; font: 600 12px/1.2 system-ui, sans-serif; cursor: pointer; }
 .cpt-drift-review:hover { background: #fdecb0; }
 .cpt-picker-drift[hidden] { display: none; }
+.cpt-bulk-copy.cpt-copied, .cpt-bulk-copy.cpt-copied:hover { background: #1e8e3e; color: #fff; }
