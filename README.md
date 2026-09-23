@@ -44,6 +44,8 @@ Clicking a tag badge opens a picker for that one transaction. Hovering it shows 
 
 Clicking anywhere else on a matched row selects it, and clicking it again deselects it. Selected rows are highlighted in blue. The click is captured before Capital One's own row handler, so it does not open the row. Clicks with a modifier key held, and clicks on links or form fields inside the row, pass through unchanged. While any row is selected, a toolbar floats beside the last hovered row. It shows the total of the selected transactions (credits count as negative), and has buttons to clear the selection, copy the selection as text, and open the picker for every selected transaction. In that picker a tag shows as checked when all selected transactions have it and as mixed when only some do; checking it adds it to all of them, unchecking removes it from all of them.
 
+The toolbar hides after the pointer has spent 4 seconds away from every matched row, the toolbar, and the toolbar's picker, with 1.5rem of slack around the toolbar and picker; typing in the picker counts as activity. The selection is kept, and hovering any row brings the toolbar back. The slack is measured from pointer coordinates, not an overlay element, so it never blocks clicks on the page.
+
 The copy button puts one line per selected transaction on the clipboard, rows on screen first in page order:
 
 ```

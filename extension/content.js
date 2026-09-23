@@ -301,7 +301,7 @@
   const rowOf = cell => cell.closest("c1-ease-row, [role=\"row\"]") || cell.parentElement;
   function forgetRow(row) { if (!row) return; delete row.dataset.cptKey; delete row.dataset.cptSelected; if (lastHoveredRow === row) lastHoveredRow = null; }
   function paintSelection() { document.querySelectorAll("[data-cpt-key]").forEach(row => { if (selected.has(row.dataset.cptKey)) row.dataset.cptSelected = ""; else delete row.dataset.cptSelected; }); }
-  function clearSelection() { selected.clear(); paintSelection(); updateBulkBar(); }
+  function clearSelection() { selected.clear(); clearTimeout(barHideTimer); barHideTimer = 0; barDismissed = false; paintSelection(); updateBulkBar(); }
   function toggleRow(row) {
     const key = row.dataset.cptKey, transaction = transactionsByKey.get(key); if (!transaction) return;
     selected.has(key) ? selected.delete(key) : selected.set(key, transaction);
@@ -354,6 +354,7 @@
     if (!bar._cptCopy._cptTimer) { bar._cptCopy.title = `Copy ${label} as text`; bar._cptCopy.setAttribute("aria-label", `Copy ${label} as text`); }
     bar._cptReset.title = `Clear selection (${label})`; bar._cptReset.setAttribute("aria-label", `Clear selection, ${label}`);
     bar._cptTag.title = `Tag ${label}`; bar._cptTag.setAttribute("aria-label", `Tag ${label}`); bar._cptTag.setAttribute("aria-expanded", String(activePicker?.anchor === bar._cptTag));
+    if (barDismissed) { bar.hidden = true; return; }
     if (activePicker?.anchor === bar._cptTag && !bar.hidden) return;
     const row = lastHoveredRow?.isConnected && lastHoveredRow.dataset.cptKey ? lastHoveredRow : document.querySelector("[data-cpt-selected]");
     if (!row) { bar.hidden = true; return; }
@@ -364,6 +365,33 @@
   }
   let barFrame = 0;
   const scheduleBulkBar = () => { if (!selected.size || barFrame) return; barFrame = requestAnimationFrame(() => { barFrame = 0; updateBulkBar(); }); };
+  // --- toolbar auto-hide ---
+  // The toolbar (and its picker) hides after the pointer has spent HIDE_AFTER_MS away from every matched
+  // row, the toolbar, and the picker, each of the last two padded by 1.5rem. The zone is checked from
+  // pointer coordinates rather than an overlay element, so nothing sits over the page to catch clicks.
+  // Hovering a row brings the toolbar back; the selection itself is kept.
+  const HIDE_AFTER_MS = 4000;
+  let barHideTimer = 0, barDismissed = false, lastPointer = null, pointerFrame = 0;
+  const within = (element, x, y, pad) => { if (!element?.isConnected || element.hidden) return false; const rect = element.getBoundingClientRect(); return x >= rect.left - pad && x <= rect.right + pad && y >= rect.top - pad && y <= rect.bottom + pad; };
+  function dismissBar() { barHideTimer = 0; if (!selected.size) return; barDismissed = true; if (activePicker?.bulk) closePicker(); updateBulkBar(); }
+  function armBarHide() { clearTimeout(barHideTimer); barHideTimer = setTimeout(dismissBar, HIDE_AFTER_MS); }
+  function trackPointer() {
+    pointerFrame = 0;
+    if (!selected.size || !lastPointer) return;
+    const { x, y } = lastPointer, target = lastPointer.outside ? null : document.elementFromPoint(x, y);
+    const onRow = !!target?.closest?.("[data-cpt-key]"), pad = 1.5 * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+    const inside = onRow || (!lastPointer.outside && (within(bulkBar, x, y, pad) || (activePicker?.bulk && within(activePicker.element, x, y, pad))));
+    if (onRow && barDismissed) { barDismissed = false; updateBulkBar(); }
+    if (inside) { clearTimeout(barHideTimer); barHideTimer = 0; }
+    else if (!barHideTimer && !barDismissed) armBarHide();
+  }
+  const schedulePointer = () => { if (!pointerFrame) pointerFrame = requestAnimationFrame(trackPointer); };
+  document.addEventListener("mousemove", event => { lastPointer = { x: event.clientX, y: event.clientY, outside: false }; schedulePointer(); }, { capture: true, passive: true });
+  // relatedTarget is null when the pointer leaves the window or moves into a frame.
+  document.addEventListener("mouseout", event => { if (!event.relatedTarget && lastPointer) { lastPointer = { ...lastPointer, outside: true }; schedulePointer(); } }, { capture: true, passive: true });
+  // Typing in the toolbar's picker counts as activity, so a parked pointer doesn't close it mid-name.
+  document.addEventListener("keydown", event => { if (barHideTimer && activePicker?.bulk && activePicker.element.contains(event.target)) armBarHide(); }, true);
+  window.addEventListener("scroll", schedulePointer, { capture: true, passive: true });
   window.addEventListener("scroll", scheduleBulkBar, { capture: true, passive: true });
   window.addEventListener("resize", scheduleBulkBar, { passive: true });
   document.addEventListener("mouseover", event => {
