@@ -16,7 +16,7 @@ For development, load `extension/manifest.json` via **Load Temporary Add-on** at
 
 ### Matching rows to transactions
 
-Transaction rows in the DOM carry no identifier, so `content.js` matches each rendered row to an API entry by content. Rows are read from `c1-ease-cell.cdk-column-amount`, in document order. Scheduled payments (`c1-ease-row--pending-schedule`, ids starting `Scheduled-`) are skipped: they are not in the transactions payload and would otherwise claim a real transaction of the same amount.
+Transaction rows in the DOM carry no identifier, so `content.js` matches each rendered row to an API entry by content. Rows are read from `c1-ease-cell.cdk-column-amount`, in document order. Scheduled payments (row ids starting `Scheduled-`, or an amount cell with `card-transactions-view-scheduled-payments__amount`) are skipped. Pending rows share the `c1-ease-row--pending-schedule` class with them, so that class is not used. Scheduled payments are not in the transactions payload and would otherwise claim a real transaction of the same amount.
 
 Candidates are grouped by absolute amount in cents, then narrowed in order:
 

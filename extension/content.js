@@ -426,7 +426,8 @@
     if (!latestEntries.length) return;
     // Scheduled payments are not in the transactions payload, so they would only ever steal a real
     // transaction's badge. Skip them, and clear anything an earlier version drew on them.
-    const scheduledRow = ".c1-ease-row--pending-schedule, c1-ease-row[id^=\"Scheduled-\"]";
+    // Not c1-ease-row--pending-schedule: Capital One puts that class on pending transactions too.
+    const scheduledRow = "c1-ease-row[id^=\"Scheduled-\"], c1-ease-row:has(> .card-transactions-view-scheduled-payments__amount)";
     const allCells = [...document.querySelectorAll("c1-ease-cell.cdk-column-amount")].filter(cell => !cell.matches("c1-ease-header-cell, [role=columnheader]"));
     for (const cell of allCells) if (cell.closest(scheduledRow)) { cell.querySelector(":scope > .cpt-badge")?.remove(); delete cell.dataset.caponeTagger; forgetRow(rowOf(cell)); }
     const cells = allCells.filter(cell => !cell.closest(scheduledRow));
