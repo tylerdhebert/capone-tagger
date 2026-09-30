@@ -424,7 +424,12 @@
     if (activeTooltipButton && !activeTooltipButton.isConnected) { activeTooltip?.remove(); activeTooltip = activeTooltipButton = null; }
     if (activePicker && !activePicker.anchor.isConnected) closePicker();
     if (!latestEntries.length) return;
-    const cells = [...document.querySelectorAll("c1-ease-cell.cdk-column-amount")].filter(cell => !cell.matches("c1-ease-header-cell, [role=columnheader]"));
+    // Scheduled payments are not in the transactions payload, so they would only ever steal a real
+    // transaction's badge. Skip them, and clear anything an earlier version drew on them.
+    const scheduledRow = ".c1-ease-row--pending-schedule, c1-ease-row[id^=\"Scheduled-\"]";
+    const allCells = [...document.querySelectorAll("c1-ease-cell.cdk-column-amount")].filter(cell => !cell.matches("c1-ease-header-cell, [role=columnheader]"));
+    for (const cell of allCells) if (cell.closest(scheduledRow)) { cell.querySelector(":scope > .cpt-badge")?.remove(); delete cell.dataset.caponeTagger; forgetRow(rowOf(cell)); }
+    const cells = allCells.filter(cell => !cell.closest(scheduledRow));
     const rows = cells.map(cell => {
       const row = rowOf(cell);
       const amount = cell.querySelector("span");
