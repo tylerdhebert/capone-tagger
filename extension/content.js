@@ -411,7 +411,9 @@
     const row = target.closest("[data-cpt-key]");
     if (!row) { suppressRowClick = false; return; }
     if (target.closest(".cpt-badge, .cpt-picker, .cpt-bulk-bar")) return;
-    const native = target.closest("a[href], input, select, textarea");
+    // Capital One's own controls keep working: the chevron and the description (a role=button with
+    // aria-expanded) expand the row, and buttons like Cancel act as usual. Only the rest of the row selects.
+    const native = target.closest("a[href], button, input, select, textarea, label, [role=button], [aria-expanded], .cdk-column-caret");
     if (native && native !== row && row.contains(native)) return;
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     event.preventDefault(); event.stopPropagation();
