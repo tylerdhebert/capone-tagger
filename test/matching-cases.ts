@@ -65,7 +65,7 @@ export const matchingCases: MatchingCase[] = [
   {
     name: "matches credits without requiring payment descriptions to agree",
     entries: [entry("payment", 500, "CAPITAL ONE ONLINE PYMT", { transactionDebitCredit: "Credit" })],
-    rows: [row("-$500.00", "Payment from Chase")],
+    rows: [row("-$500.00", "Payment from Chase", "", { signedAmount: "-$500.00" })],
     expected: ["payment"],
   },
   {
@@ -144,10 +144,37 @@ export const matchingCases: MatchingCase[] = [
     expected: ["new-year"],
   },
   {
-    name: "keeps a direction-mismatched candidate when no preferred direction exists",
+    name: "never matches a negative row to an entry flagged as a debit",
     entries: [entry("only-debit", 42, "Store", { transactionDebitCredit: "Debit" })],
     rows: [row("-$42.00", "Store", "", { signedAmount: "-$42.00" })],
-    expected: ["only-debit"],
+    expected: [],
+  },
+  {
+    name: "never matches a positive row to an entry flagged as a credit",
+    entries: [entry("refund", 42, "Store", { transactionDebitCredit: "Credit" })],
+    rows: [row("$42.00", "Store", "", { signedAmount: "$42.00" })],
+    expected: [],
+  },
+  {
+    name: "still matches an entry with no debit/credit flag in either direction",
+    entries: [entry("unflagged", 42, "Store")],
+    rows: [row("-$42.00", "Store", "", { signedAmount: "-$42.00" })],
+    expected: ["unflagged"],
+  },
+  {
+    // The reported bug: a scheduled payment sits above the pending purchase of the same magnitude and
+    // used to claim it, leaving the purchase row without its badge.
+    name: "a scheduled payment above a same-amount pending purchase does not claim it",
+    entries: [
+      entry("poshmark", 28.67, "POSHMARK", { transactionDebitCredit: "Debit", transactionState: "PENDING" }),
+      entry("other", 18.93, "POSHMARK", { transactionDebitCredit: "Debit", transactionState: "PENDING" }),
+    ],
+    rows: [
+      row("-$28.67", "Payment from WELLS FARGO BANK 5761", "", { signedAmount: "-$28.67", dateKey: { month: 8, day: 29 } }),
+      row("$18.93", "Poshmark", "0768", { signedAmount: "$18.93", dateKey: "PENDING" }),
+      row("$28.67", "Poshmark", "0768", { signedAmount: "$28.67", dateKey: "PENDING" }),
+    ],
+    expected: ["other", "poshmark"],
   },
   {
     name: "consumes distinct entries when two rows share an identical date and amount",

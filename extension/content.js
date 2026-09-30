@@ -56,7 +56,7 @@
       const cents = Math.round(Math.abs(Number(entry.transactionAmount)) * 100);
       if (!Number.isFinite(cents)) continue;
       const group = pool.get(cents) || [];
-      group.push({ entry, isCredit: entry.transactionDebitCredit === "Credit", entryDateKey: entryDateKey(entry) });
+      group.push({ entry, isCredit: entry.transactionDebitCredit === "Credit", isDebit: entry.transactionDebitCredit === "Debit", entryDateKey: entryDateKey(entry) });
       pool.set(cents, group);
     }
     const matches = [];
@@ -66,7 +66,12 @@
       if (!candidates?.length) continue;
       let remaining = candidates;
       if (row.signedCents < 0 || row.signedCents > 0) {
-        const directionMatches = remaining.filter(candidate => candidate.isCredit === (row.signedCents < 0));
+        const rowIsCredit = row.signedCents < 0;
+        // An entry flagged with the opposite direction is never this row: a scheduled -$28.67 payment is not
+        // a $28.67 purchase. Unflagged entries stay eligible, but flagged ones in the row's direction win.
+        remaining = remaining.filter(candidate => rowIsCredit ? !candidate.isDebit : !candidate.isCredit);
+        if (!remaining.length) continue;
+        const directionMatches = remaining.filter(candidate => candidate.isCredit === rowIsCredit);
         if (directionMatches.length) remaining = directionMatches;
       }
       const scores = remaining.map(candidate => dateScore(row.dateKey, candidate.entryDateKey));

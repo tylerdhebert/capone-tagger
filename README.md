@@ -20,13 +20,13 @@ Transaction rows in the DOM carry no identifier, so `content.js` matches each re
 
 Candidates are grouped by absolute amount in cents, then narrowed in order:
 
-1. **Direction** — a negative rendered amount prefers entries where `transactionDebitCredit` is `Credit`.
+1. **Direction** — a negative rendered amount never matches an entry whose `transactionDebitCredit` is `Debit`, and a positive one never matches a `Credit`; among what remains, entries flagged in the row's direction are preferred over unflagged ones. This keeps a scheduled payment of −$28.67 from claiming a $28.67 purchase listed below it.
 2. **Date** — scored by proximity: exact day, then ±1 day, then anything else. Pending rows match entries whose `transactionState` is `PENDING`. Dates are compared in local time, since the payload is UTC and the page renders local.
 3. **Card last four**, read from the row's card cell.
 4. **Description**, normalized. Skipped for credits, whose rendered text (`Payment from <bank>`) does not resemble `transactionDescription` (`CAPITAL ONE ONLINE PYMT`).
 5. **API array order**, for anything still tied.
 
-Each narrowing step is skipped if it would eliminate every candidate, so a weak signal can improve a choice but never drops a row to zero matches. Claimed entries are removed from the pool, so two rows cannot resolve to the same transaction. A row that matches nothing gets no badge.
+Apart from the direction rule, each narrowing step is skipped if it would eliminate every candidate, so a weak signal can improve a choice but never drops a row to zero matches. Claimed entries are removed from the pool, so two rows cannot resolve to the same transaction. A row that matches nothing gets no badge.
 
 ### Transaction keys
 
